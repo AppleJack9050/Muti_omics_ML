@@ -1,0 +1,102 @@
+---
+title: "Assignment 1 - Machine Learning Project"
+author: "SiCheng Zhao"
+date: '2022-05-31'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import required library
+```{r}
+library(iClusterPlus) 
+library(GenomicRanges) 
+library(gplots) 
+library(lattice) 
+```
+
+## Import data set
+```{r}
+#setwd("/Users/scz/Documents/AI Medical and Medician /Trimiter3/Precision Medicine")
+data <- read.csv(file = 'brca_data_w_subtypes.csv')
+# In order to run through program, I have to use a slice of the whole data set.
+GE = as.matrix(data[, 0:4])
+CNA = as.matrix(data[, 605:609])
+SM = as.matrix(data[, 1465:1469])
+PE = as.matrix(data[, 1714:1718])
+status = as.matrix(data[, (length(data)-4) : length(data)])
+status[status == 'Performed but Not Available'] <- ""
+
+new_data = as.data.frame(cbind(GE, CNA, SM, PE, status))
+```
+
+## Use the result tuned by program 
+```{r}
+setwd("/home/taserface/Documents/Precision Medicine ML project")
+output2=alist() 
+files=grep("cv2.fit",dir()) 
+for(i in 1:length(files)){ 
+  load(dir()[files[i]])
+  output2[[i]]=cv2.fit 
+} 
+nLambda = nrow(output2[[1]]$lambda) 
+nK = length(output2) 
+BIC = getBIC(output2) 
+devR = getDevR(output2)
+
+minBICid = apply(BIC,2,which.min) 
+devRatMinBIC = rep(NA,nK) 
+for(i in 1:nK){ 
+  devRatMinBIC[i] = devR[minBICid[i],i] 
+}
+
+plot(1:(nK+1),c(0,devRatMinBIC),type="b",xlab="Number of clusters (K+1)", 
+     ylab="%Explained Variation")
+```
+The optimal number of latent variables is where the curve of %Explained variation levels off. By
+examining the plot shown above, three is considered to be the optimal number.
+
+```{r}
+clusters  = output2[[2]]$fit[[306]]$clusters
+new_data['cluster'] = clusters
+```
+
+Difference in PR status
+```{r}
+# PR status
+counts_pr = table(new_data$cluster, new_data$PR.Status)
+barplot(counts_pr, main="PR.Statis",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+```
+Difference in ER status
+```{r}
+# ER status
+counts_er = table(new_data$cluster, new_data$ER.Status)
+barplot(counts_er, main="ER.Statis",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_er), beside=TRUE)
+```
+Difference in HER2 status
+```{r}
+# HER2 status
+counts_her2 = table(new_data$cluster, new_data$HER2.Final.Status)
+barplot(counts_her2, main="HER2.Statis",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+Difference in histological type
+```{r}
+counts_his = table(new_data$cluster, new_data$histological.type)
+barplot(counts_his, main="HER2.Statis",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_his), beside=TRUE)
+
+```
+
+Conclusion: 

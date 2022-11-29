@@ -1,0 +1,469 @@
+---
+title: "Unsupervised_learning"
+author: "SiCheng Zhao"
+date: '2022-06-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import required library
+
+```{r}
+library(iClusterPlus) 
+library(GenomicRanges) 
+library(gplots) 
+library(lattice) 
+library('creditmodel')
+library(magrittr)
+library(pheatmap)
+library(dendextend)
+library(dplyr)
+library(Rtsne)
+library(cluster)
+library(ggplot2)
+```
+
+## Import data set
+
+```{r}
+# setwd("/Users/scz/Documents/AI Medical and Medician /Trimiter3/Precision Medicine")
+data <- read.csv(file = 'brca_data_w_subtypes.csv')
+
+GE = as.data.frame(data[, 0:604])
+CNA = as.data.frame(data[, 605:1464])
+SM = as.data.frame(data[, 1465:1713])
+PE = as.data.frame(data[, 1714:1936])
+```
+
+## low variance filter
+
+```{r}
+# filter low variance with 0.97 maximum percent of unique values
+GE <- low_variance_filter(GE, lvp = 0.97)
+CNA = low_variance_filter(CNA, lvp = 0.97)
+SM = low_variance_filter(SM, lvp = 0.97)
+PE = low_variance_filter(PE, lvp = 0.97)
+```
+
+## low expression filtering
+
+```{r}
+# get the top 10 expression of mult-omics data
+## Gene expression 
+GE_sort <- GE %>% apply(2, sum) %>% order(decreasing=TRUE) # group by expression
+GE_new  <- GE[, GE_sort[0:10]]
+## CNA
+CNA_sort <- CNA %>% apply(2, abs) %>% apply(2, sum) %>% order(decreasing=TRUE)  # group by expression
+CNA_new  <- CNA[, CNA_sort[0:10]]
+## somatic mutation
+SM_sort <- SM %>% apply(2, abs) %>% apply(2, sum) %>% order(decreasing=TRUE)    # group by expression
+SM_new  <- SM[, SM_sort[0:10]]
+## protein expression
+PE_sort <- PE %>% apply(2, abs) %>% apply(2, sum) %>% order(decreasing=TRUE)    # group by expression
+PE_new  <- PE[, PE_sort[0:10]]
+```
+
+## transfer data to matrix
+
+```{r}
+# transfer to matrix
+GE_new <- as.matrix(GE_new)
+CNA_new <- as.matrix(CNA_new)
+SM_new <- as.matrix(SM_new)
+PE_new <- as.matrix(PE_new)
+```
+
+## load result from icluster
+
+```{r}
+# load saved file 
+output2=alist() 
+files=grep("cv2.fit",dir()) 
+for(i in 1:length(files)){ 
+  load(dir()[files[i]])
+  output2[[i]]=cv2.fit 
+} 
+# number of outputs
+nK = length(output2) 
+# BIC value
+BIC = getBIC(output2) 
+# variance of outputs
+devR = getDevR(output2)
+
+# get variance of mininum BIC
+minBICid = apply(BIC,2,which.min) 
+devRatMinBIC = rep(NA,nK) 
+for(i in 1:nK){ 
+  devRatMinBIC[i] = devR[minBICid[i],i] 
+}
+
+# plot variance of mininum BIC according to number of cluster
+plot(1:(nK+1),c(0,devRatMinBIC),type="b",xlab="Number of clusters (K+1)", 
+     ylab="%Explained Variation")
+```
+
+The optimal number of latent variables is where the curve of %Explained variation levels off. By examining the plot shown above, three is considered to be the optimal number.
+
+## Function define
+
+```{r}
+# normalization
+cal_z_score <- function(x){
+  (x - mean(x)) / sd(x)
+}
+# data transfer
+sw_fun <- function(x) switch(x, '1'='cluster_1', '2'='cluster_2', '3'='cluster_3')
+
+```
+
+## Gene expression
+
+```{r}
+# pheatmap
+rownames(GE_new) <- paste0("p_", seq(nrow(GE_new)))
+GE_norm <- t(apply(GE_new, 1, cal_z_score))
+GE_heatmap <- pheatmap(GE_norm, silent = TRUE, cluster_cols = FALSE)
+# get cluster from hiearchical clutering
+GE_col <- cutree(tree = as.dendrogram(GE_heatmap$tree_row), k = 3)
+GE_col <- data.frame(cluster = sapply(GE_col, sw_fun))
+# get result from icluster
+iclusters  = output2[[2]]$fit[[306]]$clusters
+iclusters <- as.factor(iclusters)
+GE_col$iclusters <- iclusters 
+
+# t_sne data 
+GE_dist <- daisy(GE_norm)   # compute distance using euclidean distance
+tsne_GE <- Rtsne(GE_dist, is_distance = TRUE)
+tsne_GE_data <- tsne_GE$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(GE_col$cluster),
+         name = rownames(GE_col))
+```
+
+## CNA
+
+```{r}
+# pheatmap
+rownames(CNA_new) <- paste0("p_", seq(nrow(CNA_new)))
+# get cluster from hiearchical clutering
+CNA_heatmap <- pheatmap(CNA_new, clustering_distance_rows="manhattan", silent = TRUE, cluster_cols = FALSE)
+CNA_col <- cutree(tree = as.dendrogram(CNA_heatmap$tree_row), k = 3)
+CNA_col <- data.frame(cluster = sapply(CNA_col, sw_fun))
+# add icluster into a column
+CNA_col$iclusters <- iclusters 
+
+# t_sne
+CNA_dist <- daisy(CNA, metric = "manhattan")  # compute distance using manhattan distance
+tsne_CNA <- Rtsne(CNA_dist, is_distance = TRUE)
+tsne_CNA_data <- tsne_CNA$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(CNA_col$cluster),
+         name = rownames(CNA_col))
+```
+
+## Somatic mutation
+
+```{r}
+# pheatmap
+rownames(SM_new) <- paste0("p_", seq(nrow(SM_new)))
+# get cluster from hiearchical clutering
+SM_heatmap <- pheatmap(SM_new, clustering_distance_rows="manhattan", silent = TRUE, cluster_cols = FALSE)
+SM_col <- cutree(tree = as.dendrogram(SM_heatmap$tree_row), k = 2)
+SM_col <- data.frame(cluster = sapply(SM_col, sw_fun))
+
+SM_col$iclusters <- iclusters 
+# t_sne
+SM_dist <- daisy(SM, metric = "manhattan")     # compute distance using manhattan distance
+tsne_SM <- Rtsne(SM_dist, is_distance = TRUE)
+tsne_SM_data <- tsne_SM$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(SM_col$cluster),
+         name = rownames(SM_col))
+```
+
+## Protein expression
+
+```{r}
+# pheatmap
+rownames(PE_new) <- paste0("p_", seq(nrow(PE_new)))
+# get cluster from hiearchical clutering
+PE_norm <- t(apply(PE_new, 1, cal_z_score))
+PE_heatmap <- pheatmap(PE_norm, silent = TRUE, cluster_cols = FALSE)
+PE_col <- cutree(tree = as.dendrogram(PE_heatmap$tree_row), k = 2)
+PE_col <- data.frame(cluster = sapply(PE_col, sw_fun))
+
+PE_col$iclusters <- iclusters 
+# t_sne
+PE_dist <- daisy(PE_norm, metric = "manhattan")  # compute distance using manhattan distance
+tsne_PE <- Rtsne(PE_dist, is_distance = TRUE)
+tsne_PE_data <- tsne_PE$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(PE_col$cluster),
+         name = rownames(PE_col))
+```
+
+## pheatmap
+
+{r}
+par(mfrow=c(1, 4))
+# Gene expression
+pheatmap(GE_norm, annotation_row = GE_col,
+cutree_rows = 3, cluster_cols = FALSE, main='Gene expression')
+# Copy number muatation
+pheatmap(CNA_new, annotation_row = CNA_col, clustering_distance_rows="manhattan",
+cutree_rows = 3, cluster_cols=FALSE, main='Copy number mutation')
+# Somatic mutation
+pheatmap(SM_new, annotation_row = SM_col, clustering_distance_rows="manhattan",
+cutree_rows = 2, cluster_cols=FALSE, main='Somatic mutation')
+# Protein expression
+pheatmap(PE_norm, annotation_row = PE_col,
+cutree_rows = 2, cluster_cols=FALSE, main='Protein expression')
+
+From the pheatmap we can see that there is a huge difference between the group of icluster and group clustered by hierarchical clustering.
+
+## t_sne
+
+```{r}
+par(mfrow=c(1, 4))
+# Gene expression
+ggplot(aes(x = X, y = Y), data = tsne_GE_data) + geom_point(aes(color = cluster)) + ggtitle("Gene expression")
+# Copy number mutation
+ggplot(aes(x = X, y = Y), data = tsne_CNA_data) + geom_point(aes(color = cluster)) + ggtitle("Copy number mutation")
+# Somatic mutation
+ggplot(aes(x = X, y = Y), data = tsne_SM_data) + geom_point(aes(color = cluster)) + ggtitle("Somatic mutation")# have some problems
+# Protein expression
+ggplot(aes(x = X, y = Y), data = tsne_PE_data) + geom_point(aes(color = cluster)) + ggtitle("Protein expression")
+```
+
+Clustering using icluster
+
+```{r}
+# data filtering 
+status = as.matrix(data[, (length(data)-4) : length(data)])
+status[status == 'Performed but Not Available'] <- ""
+status[status == 'Indeterminate'] <- ""
+status[status == 'Not Performed'] <- ""
+status[status == 'Equivocal'] <- ""
+status[status == 'Not Available'] <- ""
+
+new_data = as.data.frame(cbind(GE_new, CNA_new, SM_new, PE_new, status))
+# add icluster into new_data
+iclusters  = output2[[2]]$fit[[306]]$clusters
+new_data['icluster'] = as.factor(iclusters)
+# add Gene expression clustering
+new_data['GE_cluster'] = GE_col['cluster']
+# add CNA clustering
+new_data['CNA_cluster'] = CNA_col['cluster']
+# add SM clustering
+new_data['SM_cluster'] = SM_col['cluster']
+# add PE clustering
+new_data['PE_cluster'] = PE_col['cluster']
+
+# get a new filtered data 
+new_data1 <- new_data %>% filter(PR.Status != "") %>% filter(ER.Status != "") %>% filter(HER2.Final.Status != "")
+```
+
+## Evaluation of the clustering result
+
+icluster
+
+```{r}
+par(mfrow=c(1, 3))
+# PR status
+counts_pr = table(new_data1$icluster, new_data1$PR.Status)
+barplot(counts_pr %>% prop.table(margin = 1), main="PR.Status",  # barplot using frequency of counts
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+# ER status
+counts_er = table(new_data1$icluster, new_data1$ER.Status) 
+barplot(counts_er %>% prop.table(margin = 1), main="ER.Status",   # barplot using frequency of counts
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_er), beside=TRUE)
+
+# HER2 status
+counts_her2 = table(new_data1$icluster, new_data1$HER2.Final.Status)
+barplot(counts_her2 %>% prop.table(margin = 1), main="HER2.Status",   # barplot using frequency of counts
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+
+Chi-squared test
+
+```{r}
+# PR status
+print("PR.Status")
+chisq.test(counts_pr)
+# ER.Status
+print("ER.Status")
+chisq.test(counts_er)
+# HER2.Status
+print("HER2.Status")
+chisq.test(counts_her2)
+```
+
+From the barplot, we can see that there is no obvious difference between 3 clusters on PR, ER and HER2 status. In order to validate the observation, Chi-squared test are used to evaluate the difference of frequency between three clusters. Here I set 0.05 as the threshold for p value. We can see that p value of PR status, ER status and HER2 status are all greater than 0.05. We can conclude that the different between different groups is not obvious. 
+
+# Gene expression
+
+```{r}
+par(mfrow=c(1, 3))
+# PR status
+counts_pr = table(new_data1$GE_cluster, new_data1$PR.Status)
+barplot(counts_pr %>% prop.table(margin = 1), main="PR.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+# ER status
+counts_er = table(new_data1$GE_cluster, new_data1$ER.Status)
+barplot(counts_er %>% prop.table(margin = 1), main="ER.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_er), beside=TRUE)
+
+# HER2 status
+counts_her2 = table(new_data1$GE_cluster, new_data1$HER2.Final.Status)
+barplot(counts_her2 %>% prop.table(margin = 1), main="HER2.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+
+Chi-squared test
+
+```{r}
+# PR status
+print("PR.Status")
+chisq.test(counts_pr)
+# ER.Status
+print("ER.Status")
+chisq.test(counts_er)
+# HER2.Status
+print("HER2.Status")
+chisq.test(counts_her2)
+```
+From the graph and chi squared result we can see that p value of PR status and ER status is less than 0.05. We can conclude that the difference between groups is obvious based on gene expression clustering. However, the p value on HER2 status is greater than 0.05. Therefore, difference on HER2 is not obvious.
+
+CNA clustering
+
+```{r}
+par(mfrow=c(1, 3))
+# PR status
+counts_pr = table(new_data1$CNA_cluster, new_data1$PR.Status)
+barplot(counts_pr %>% prop.table(margin = 1), main="PR.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+# ER status
+counts_er = table(new_data1$CNA_cluster, new_data1$ER.Status)
+barplot(counts_er %>% prop.table(margin = 1), main="ER.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_er), beside=TRUE)
+
+# HER2 status
+counts_her2 = table(new_data1$CNA_cluster, new_data1$HER2.Final.Status)
+barplot(counts_her2 %>% prop.table(margin = 1), main="HER2.Status",
+        col=c("darkblue","red", "yellow"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+
+Chi-squared test
+
+```{r}
+# PR status
+print("PR.Status")
+chisq.test(counts_pr)
+# ER.Status
+print("ER.Statis")
+chisq.test(counts_er)
+# HER2.Status
+print("HER2.Statis")
+chisq.test(counts_her2)
+```
+From the graph and chi squared result we can see that p value of PR status and ER status is less than 0.05. We can conclude that the difference between groups is obvious based on CNA clustering. However, the p value on HER2 status is greater than 0.05. Therefore, difference on HER2 is not obvious.
+
+SM clustering
+
+```{r}
+par(mfrow=c(1, 3))
+# PR status
+counts_pr = table(new_data1$SM_cluster, new_data1$PR.Status)
+barplot(counts_pr %>% prop.table(margin = 1), main="PR.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+# ER status
+counts_er = table(new_data1$SM_cluster, new_data1$ER.Status)
+barplot(counts_er %>% prop.table(margin = 1), main="ER.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_er), beside=TRUE)
+
+# HER2 status
+counts_her2 = table(new_data1$SM_cluster, new_data1$HER2.Final.Status)
+barplot(counts_her2 %>% prop.table(margin = 1), main="HER2.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+
+Chi-squared test
+
+```{r}
+# PR status
+print("PR.Status")
+chisq.test(counts_pr)
+# ER.Status
+print("ER.Status")
+chisq.test(counts_er)
+# HER2.Status
+print("HER2.Status")
+chisq.test(counts_her2)
+```
+From the graph and chi squared result we can see that p value of PR status, ER status and HER2 status are all greater than 0.05. We can conclude that the difference between groups is obvious based on somatic mutation clustering. 
+
+PE clustering
+
+```{r}
+par(mfrow=c(1, 3))
+# PR status
+counts_pr = table(new_data1$PE_cluster, new_data1$PR.Status)
+barplot(counts_pr %>% prop.table(margin = 1), main="PR.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_pr), beside=TRUE)
+
+# ER status
+counts_er = table(new_data1$PE_cluster, new_data1$ER.Status)
+barplot(counts_er %>% prop.table(margin = 1), main="ER.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_er), beside=TRUE)
+
+# HER2 status
+counts_her2 = table(new_data1$PE_cluster, new_data1$HER2.Final.Status)
+barplot(counts_her2 %>% prop.table(margin = 1), main="HER2.Status",
+        col=c("darkblue","red"),
+        legend = rownames(counts_her2), beside=TRUE)
+```
+
+Chi-squared test
+
+```{r}
+# PR status
+print("PR.Status")
+chisq.test(counts_pr)
+# ER.Status
+print("ER.Statis")
+chisq.test(counts_er)
+# HER2.Status
+print("HER2.Statis")
+chisq.test(counts_her2)
+```
+
+From the graph and chi squared result we can see that p value of PR status and HER2 status are all greater than 0.05. We can conclude that the difference between groups is not obvious based on PE clustering. However, the p value on HER2 status is less than 0.05. Therefore, difference on HER2 is obvious.
+
+# Conclusion
+
+
